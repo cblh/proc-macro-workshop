@@ -22,6 +22,8 @@ fn do_expand(st: &syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let builder_struct_fields_def = generate_builder_struct_fields_def(&fields)?;
     // 下面这一行是新加的
     let builder_struct_factory_init_clauses = generate_builder_struct_factory_init_clauses(fields)?;
+    // 下面这一行是第三关新加的
+    let setter_functions = generate_setter_functions(fields)?;
 
     let ret = quote! {     // ----------------------------------+
         pub struct #builder_name_ident {                   //   |
@@ -35,6 +37,10 @@ fn do_expand(st: &syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 }
                  }                                          //   |
         }                                                  //   |
+        // 下面这三行是第三关新加的
+        impl #builder_name_ident {
+            #setter_functions
+        }
     }; // ----------------------------------+
 
     Ok(ret)
@@ -84,4 +90,24 @@ fn generate_builder_struct_factory_init_clauses(
         .collect();
 
     Ok(init_clauses)
+}
+
+fn generate_setter_functions(fields: &StructFields) -> syn::Result<proc_macro2::TokenStream> {
+    let idents: Vec<_> = fields.iter().map(|f| &f.ident).collect();
+    let types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
+
+    let mut final_tokenstream = proc_macro2::TokenStream::new();
+
+    for (ident, ty) in idents.iter().zip(types.iter()) {
+        let setter_function = quote! {
+            pub fn #ident(&mut self, #ident: #ty) -> &mut Self {
+                self.#ident = std::option::Option::Some(#ident);
+                self
+            }
+        };
+
+        final_tokenstream.extend(setter_function);
+    }
+
+    Ok(final_tokenstream)
 }
