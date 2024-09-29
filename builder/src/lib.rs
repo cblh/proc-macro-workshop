@@ -1,4 +1,4 @@
-use proc_macro::TokenStream;
+use proc_macro::{token_stream, TokenStream};
 use quote::{quote, ToTokens};
 
 #[proc_macro_derive(Builder)]
@@ -24,6 +24,9 @@ fn do_expand(st: &syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let builder_struct_factory_init_clauses = generate_builder_struct_factory_init_clauses(fields)?;
     // 下面这一行是第三关新加的
     let setter_functions = generate_setter_functions(fields)?;
+    // 下面这一行是第四关新加的
+    let generated_builder_functions = generate_build_function(fields,struct_ident)?;
+
 
     let ret = quote! {     // ----------------------------------+
         pub struct #builder_name_ident {                   //   |
@@ -40,6 +43,7 @@ fn do_expand(st: &syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         // 下面这三行是第三关新加的
         impl #builder_name_ident {
             #setter_functions
+            #generated_builder_functions
         }
     }; // ----------------------------------+
 
@@ -110,4 +114,38 @@ fn generate_setter_functions(fields: &StructFields) -> syn::Result<proc_macro2::
     }
 
     Ok(final_tokenstream)
+}
+
+fn generate_build_function(fields: &StructFields, origin_stuct_ident: &syn::Ident) -> syn::Result<proc_macro2::TokenStream> {
+    let idents: Vec<_> = fields.iter().map(|f| &f.ident).collect();
+    
+    let mut check_code_pieces = Vec::new();
+    for idx in 0..idents.len() {
+        let ident = &idents[idx];
+        let check_code = quote! {
+            if self.#ident.is_none() {
+                let err = format!("{} field missing", stringify!(#ident));
+                return std::result::Result::Err(err.into())
+            }
+        };
+        check_code_pieces.push(check_code);
+    }
+
+    let mut fill_result_clauses = Vec::new();
+    for idx in 0..idents.len() {
+        let ident = idents[idx];
+        fill_result_clauses.push(quote! {
+            #ident: self.#ident.take().unwrap()
+        });
+    }
+
+    let token_stream = quote! {
+        pub fn build(&mut self) -> Result<#origin_stuct_ident, std::boxed::Box<dyn std::error::Error>> {
+            #(#check_code_pieces)*
+            Ok(#origin_stuct_ident{
+                #(#fill_result_clauses),*
+            })
+        }
+    };
+    Ok(token_stream)
 }
