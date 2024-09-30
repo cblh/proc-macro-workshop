@@ -71,10 +71,18 @@ fn generate_builder_struct_fields_def(
     fields: &StructFields,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let idents: Vec<_> = fields.iter().map(|f| &f.ident).collect();
-    let types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
+    // 第六关，对types 变量的构建逻辑进行了调整
+    let types: Vec<_> = fields.iter().map(|f| {
+        if let Some(inner_ty) = get_optional_inner_type(&f.ty) {
+            quote!(std::option::Option<#inner_ty>)
+        } else {
+            let origin_ty = &f.ty;
+            quote!(std::option::Option<#origin_ty>)
+        }
+    }).collect();
 
     let ret = quote! {
-        #(#idents: Option<#types>),*
+        #(#idents: #types),*
     };
 
     Ok(ret)
@@ -103,14 +111,25 @@ fn generate_setter_functions(fields: &StructFields) -> syn::Result<proc_macro2::
     let mut final_tokenstream = proc_macro2::TokenStream::new();
 
     for (ident, ty) in idents.iter().zip(types.iter()) {
-        let setter_function = quote! {
-            pub fn #ident(&mut self, #ident: #ty) -> &mut Self {
-                self.#ident = std::option::Option::Some(#ident);
-                self
+        let tokenstream_piece;
+        // 第六关，对tokenstream_piece 变量的构建逻辑进行了调整
+        if let Some(innner_ty) = get_optional_inner_type(ty) {
+            tokenstream_piece = quote! {
+                fn #ident(&mut self, #ident: #innner_ty) -> &mut Self {
+                    self.#ident = std::option::Option::Some(#ident);
+                    self
+                }
+            };
+        } else {
+            tokenstream_piece = quote! {
+                fn #ident(&mut self, #ident: #ty) -> &mut Self {
+                    self.#ident = std::option::Option::Some(#ident);
+                    self
+                }
             }
-        };
+        }
 
-        final_tokenstream.extend(setter_function);
+        final_tokenstream.extend(tokenstream_piece);
     }
 
     Ok(final_tokenstream)
@@ -118,25 +137,37 @@ fn generate_setter_functions(fields: &StructFields) -> syn::Result<proc_macro2::
 
 fn generate_build_function(fields: &StructFields, origin_stuct_ident: &syn::Ident) -> syn::Result<proc_macro2::TokenStream> {
     let idents: Vec<_> = fields.iter().map(|f| &f.ident).collect();
-    
+    // 下面这一行是第六关新加的，之前没用到type相关信息，就没写下面这一行
+    let types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
+
     let mut check_code_pieces = Vec::new();
     for idx in 0..idents.len() {
         let ident = &idents[idx];
-        let check_code = quote! {
-            if self.#ident.is_none() {
-                let err = format!("{} field missing", stringify!(#ident));
-                return std::result::Result::Err(err.into())
-            }
-        };
-        check_code_pieces.push(check_code);
+        // 第六关修改，只对不是`Option`类型的字段生成校验逻辑
+        if get_optional_inner_type(&types[idx]).is_none() {
+            let check_code = quote! {
+                if self.#ident.is_none() {
+                    let err = format!("{} field missing", stringify!(#ident));
+                    return std::result::Result::Err(err.into())
+                }
+            };
+            check_code_pieces.push(check_code);
+        }
     }
 
     let mut fill_result_clauses = Vec::new();
     for idx in 0..idents.len() {
         let ident = idents[idx];
-        fill_result_clauses.push(quote! {
-            #ident: self.#ident.take().unwrap()
-        });
+        // 这里需要区分`Option`类型字段和非`Option`类型字段
+        if get_optional_inner_type(&types[idx]).is_none() {
+            fill_result_clauses.push(quote! {
+                #ident: self.#ident.clone().unwrap()
+            });
+        } else {
+            fill_result_clauses.push(quote! {
+                #ident: self.#ident.clone()
+            });
+        }
     }
 
     let token_stream = quote! {
@@ -148,4 +179,20 @@ fn generate_build_function(fields: &StructFields, origin_stuct_ident: &syn::Iden
         }
     };
     Ok(token_stream)
+}
+
+fn get_optional_inner_type(ty: &syn::Type) -> Option<&syn::Type> {
+    if let syn::Type::Path(syn::TypePath { ref path,.. }) = ty {
+        if let Some(seg) = path.segments.last() {
+            if seg.ident == "Option" {
+                if let syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments { ref args,.. }) = &seg.arguments {
+                    if let Some(syn::GenericArgument::Type(innner_ty)) = args.first() {
+                        return Some(innner_ty)
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
