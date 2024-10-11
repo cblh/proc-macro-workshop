@@ -74,49 +74,53 @@ fn generate_builder_struct_fields_def(
 ) -> syn::Result<proc_macro2::TokenStream> {
     let idents: Vec<_> = fields.iter().map(|f| &f.ident).collect();
     // 第六关，对types 变量的构建逻辑进行了调整
-    let types: Vec<_> = fields
+    // 第八关修改，从这里又可以看出，对于复杂的过程宏，采用迭代器比较麻烦，返回一个错误要费一些周折
+    // 这里修改了map中闭包的返回值，使其返回一个syn::Result<T>
+    let types: syn::Result<Vec<proc_macro2::TokenStream>> = fields
         .iter()
         .map(|f| {
             if let Some(inner_ty) = get_generic_inner_type(&f.ty, "Option") {
-                quote!(std::option::Option<#inner_ty>)
-            } else if get_user_specified_ident_for_vec(f).is_some() {
+                Ok(quote!(std::option::Option<#inner_ty>))
+            } else if get_user_specified_ident_for_vec(f)?.is_some() {
                 let origin_ty = &f.ty;
-                quote!(#origin_ty)
+                Ok(quote!(#origin_ty))
             } else {
                 let origin_ty = &f.ty;
-                quote!(std::option::Option<#origin_ty>)
+                Ok(quote!(std::option::Option<#origin_ty>))
             }
         })
         .collect();
 
-    let ret = quote! {
+    let types = types?;
+    let token_stream = quote! {
         #(#idents: #types),*
     };
 
-    Ok(ret)
+    Ok(token_stream)
 }
 
 fn generate_builder_struct_factory_init_clauses(
     fields: &StructFields,
 ) -> syn::Result<Vec<proc_macro2::TokenStream>> {
-    let init_clauses: Vec<_> = fields
+    // 第八关修改，从闭包中返回错误信息
+    let init_clauses: syn::Result<Vec<proc_macro2::TokenStream>> = fields
         .iter()
         .map(|f| {
             let ident = &f.ident;
             // 下面这个if分支是第七关加入的，在第六关的时候只有else分支里的代码
-            if get_user_specified_ident_for_vec(f).is_some() {
-                quote! {
+            if get_user_specified_ident_for_vec(f)?.is_some() {
+                Ok(quote! {
                     #ident: std::vec::Vec::new()
-                }
+                })
             } else {
-                quote! {
+                Ok(quote! {
                     #ident: std::option::Option::None
-                }
+                })
             }
         })
         .collect();
 
-    Ok(init_clauses)
+    Ok(init_clauses?)
 }
 
 fn generate_setter_functions(fields: &StructFields) -> syn::Result<proc_macro2::TokenStream> {
@@ -138,7 +142,7 @@ fn generate_setter_functions(fields: &StructFields) -> syn::Result<proc_macro2::
                 }
             };
         // 下面这个分支是第七关加入的
-        } else if let Some(ref user_specified_ident) =
+        } else if let Ok(Some(ref user_specified_ident)) =
             get_user_specified_ident_for_vec(&fields[idx])
         {
             let inner_ty = get_generic_inner_type(type_, "Vec").ok_or(syn::Error::new(
@@ -189,7 +193,7 @@ fn generate_build_function(
         // 第六关修改，只对不是`Option`类型的字段生成校验逻辑
         // 第七关修改，只对不是`Option`类型且没有指定each属性的字段生成校验逻辑
         if get_generic_inner_type(&types[idx], "Option").is_none()
-            && get_user_specified_ident_for_vec(&fields[idx]).is_none()
+            && get_user_specified_ident_for_vec(&fields[idx])?.is_none()
         {
             let check_code = quote! {
                 if self.#ident.is_none() {
@@ -207,7 +211,7 @@ fn generate_build_function(
         // 第七关，这里需要判断是否有each属性。第一个分支是本关加入的。注意这里几个分支的先后判断顺序
         // 看我写在这里的代码可能没什么感觉，但如果是自己写的话，这几个分支的判断先后顺序是很重要的，否���可能生成出有问题的代码
         // 这里主要的问题是梳理清楚【是否有each属性】和【是否为Option类型】这两个条件的覆盖范围
-        if get_user_specified_ident_for_vec(&fields[idx]).is_some() {
+        if get_user_specified_ident_for_vec(&fields[idx])?.is_some() {
             fill_result_clauses.push(quote! {
                 #ident: self.#ident.clone()
             });
@@ -263,7 +267,7 @@ pub fn attribute_explore(input: TokenStream) -> TokenStream {
     proc_macro2::TokenStream::new().into()
 }
 
-fn get_user_specified_ident_for_vec(fields: &syn::Field) -> Option<syn::Ident> {
+fn get_user_specified_ident_for_vec(fields: &syn::Field) -> syn::Result<Option<syn::Ident>> {
     for attr in &fields.attrs {
         if let Ok(syn::Meta::List(syn::MetaList {
             ref path,
@@ -276,10 +280,15 @@ fn get_user_specified_ident_for_vec(fields: &syn::Field) -> Option<syn::Ident> {
                     if let Some(syn::NestedMeta::Meta(syn::Meta::NameValue(kv))) = nested.first() {
                         if kv.path.is_ident("each") {
                             if let syn::Lit::Str(ref ident_str) = kv.lit {
-                                return Some(syn::Ident::new(
+                                return Ok(Some(syn::Ident::new(
                                     ident_str.value().as_str(),
                                     attr.span(),
-                                ));
+                                )));
+                            }
+                        } else {
+                            // 第八关加入，注意这里new_spanned函数的参数，我们需要在语法树中找到一个合适的节点来获取它的span，如果这个语法树节点找的不对，产生出的错误信息就会不一样
+                            if let Ok(syn::Meta::List(ref list)) = attr.parse_meta() {
+                                return Err(syn::Error::new_spanned(list, r#"expected `builder(each = "...")`"#))
                             }
                         }
                     }
@@ -288,5 +297,5 @@ fn get_user_specified_ident_for_vec(fields: &syn::Field) -> Option<syn::Ident> {
         }
     }
 
-    None
+    Ok(None)
 }
