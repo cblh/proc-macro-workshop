@@ -1,7 +1,7 @@
 #![feature(proc_macro_diagnostic)]
 
-use proc_macro::{token_stream, TokenStream};
-use quote::{quote, ToTokens};
+use proc_macro::TokenStream;
+use quote::quote;
 use syn::spanned::Spanned;
 
 #[proc_macro_derive(Builder, attributes(builder))]
@@ -209,7 +209,7 @@ fn generate_build_function(
     for idx in 0..idents.len() {
         let ident = idents[idx];
         // 第七关，这里需要判断是否有each属性。第一个分支是本关加入的。注意这里几个分支的先后判断顺序
-        // 看我写在这里的代码可能没什么感觉，但如果是自己写的话，这几个分支的判断先后顺序是很重要的，否���可能生成出有问题的代码
+        // 看我写在这里的代码可能没什么感觉，但如果是自己写的话，这几个分支的判断先后顺序是很重要的，否可能生成出有问题的代码
         // 这里主要的问题是梳理清楚【是否有each属性】和【是否为Option类型】这两个条件的覆盖范围
         if get_user_specified_ident_for_vec(&fields[idx])?.is_some() {
             fill_result_clauses.push(quote! {
@@ -228,9 +228,9 @@ fn generate_build_function(
     }
 
     let token_stream = quote! {
-        pub fn build(&mut self) -> Result<#origin_stuct_ident, std::boxed::Box<dyn std::error::Error>> {
+        pub fn build(&mut self) -> std::result::Result<#origin_stuct_ident, std::boxed::Box<dyn std::error::Error>> {
             #(#check_code_pieces)*
-            Ok(#origin_stuct_ident{
+            std::result::Result::Ok(#origin_stuct_ident{
                 #(#fill_result_clauses),*
             })
         }
@@ -269,7 +269,7 @@ pub fn attribute_explore(input: TokenStream) -> TokenStream {
 
 fn get_user_specified_ident_for_vec(fields: &syn::Field) -> syn::Result<Option<syn::Ident>> {
     for attr in &fields.attrs {
-        if let Ok(syn::Meta::List(syn::MetaList {
+        if let std::result::Result::Ok(syn::Meta::List(syn::MetaList {
             ref path,
             ref nested,
             ..
@@ -280,7 +280,7 @@ fn get_user_specified_ident_for_vec(fields: &syn::Field) -> syn::Result<Option<s
                     if let Some(syn::NestedMeta::Meta(syn::Meta::NameValue(kv))) = nested.first() {
                         if kv.path.is_ident("each") {
                             if let syn::Lit::Str(ref ident_str) = kv.lit {
-                                return Ok(Some(syn::Ident::new(
+                                return std::result::Result::Ok(std::option::Option::Some(syn::Ident::new(
                                     ident_str.value().as_str(),
                                     attr.span(),
                                 )));
@@ -297,5 +297,5 @@ fn get_user_specified_ident_for_vec(fields: &syn::Field) -> syn::Result<Option<s
         }
     }
 
-    Ok(None)
+    std::result::Result::Ok(std::option::Option::None)
 }
