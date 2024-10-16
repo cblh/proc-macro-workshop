@@ -86,8 +86,27 @@ fn generate_debug_trait(st: &syn::DeriveInput) -> syn::Result<proc_macro2::Token
 
     let mut generics_param_to_modify = st.generics.clone();
 
+    let fields = get_fields_from_derive_input(st)?;
+    let mut field_type_names = Vec::new();
+    let mut phantomdata_type_param_names = Vec::new();
+
+    for field in fields.iter() {
+        if let Some(field_type_name) = get_field_type_name(field)? {
+            field_type_names.push(field_type_name);
+            }
+
+        if let Some(phantomdata_type_param_name) = get_phantom_data_generic_type_name(field)? {
+            phantomdata_type_param_names.push(phantomdata_type_param_name);
+        }
+    }
+
+
     for g in generics_param_to_modify.params.iter_mut() {
         if let syn::GenericParam::Type(ref mut t) = g {
+            let type_param_name = t.ident.to_string();
+            if phantomdata_type_param_names.contains(&type_param_name) && !field_type_names.contains(&type_param_name) {
+                continue;
+            }
             t.bounds.push(syn::parse_quote!(std::fmt::Debug));
         }
     }
@@ -104,4 +123,35 @@ fn generate_debug_trait(st: &syn::DeriveInput) -> syn::Result<proc_macro2::Token
     );
 
     Ok(ret_stream)
+}
+
+fn get_phantom_data_generic_type_name(field: &syn::Field) -> syn::Result<Option<String>> {
+    if let syn::Type::Path(syn::TypePath { path,.. }) = &field.ty {
+        if let Some(seg) = path.segments.last() {
+            if seg.ident == "PhantomData" {
+                if let syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+                    ref args,
+                   ..
+                }) = &seg.arguments {
+                    if let syn::GenericArgument::Type(syn::Type::Path(syn::TypePath { path,.. })) = args.first().unwrap() {
+                        if let Some(seg) = path.segments.last() {
+                            return Ok(Some(seg.ident.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn get_field_type_name(field: &syn::Field) -> syn::Result<Option<String>> {
+    if let syn::Type::Path(syn::TypePath { path: syn::Path{ref segments, ..}, .. }) = &field.ty {
+        if let Some(seg) = segments.last() {
+            return Ok(Some(seg.ident.to_string()));
+        }
+    }
+
+    Ok(None)
 }
