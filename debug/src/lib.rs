@@ -30,7 +30,7 @@ fn get_fields_from_derive_input(d: &syn::DeriveInput) -> syn::Result<&StructFiel
     }
 }
 
-fn generate_debug_trait(st: &syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+fn generate_debug_trait_core(st: &syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let fields = get_fields_from_derive_input(st)?;
     let struct_name_ident = &st.ident;
     let struct_name_literal = struct_name_ident.to_string();
@@ -58,15 +58,7 @@ fn generate_debug_trait(st: &syn::DeriveInput) -> syn::Result<proc_macro2::Token
        .finish()
     ));
 
-    let ret_stream = quote!(
-        impl std::fmt::Debug for #struct_name_ident {
-            fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
-                #fmt_body_stream
-            }
-        }
-    );
-
-    Ok(ret_stream)
+    Ok(fmt_body_stream)
 }
 
 fn get_custom_format_of_field(field: &syn::Field) -> syn::Result<Option<String>> {
@@ -85,4 +77,31 @@ fn get_custom_format_of_field(field: &syn::Field) -> syn::Result<Option<String>>
     }
 
     Ok(None)
+}
+
+fn generate_debug_trait(st: &syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    let fmt_body_stream = generate_debug_trait_core(st)?;
+
+    let struct_name_ident = &st.ident;
+
+    let mut generics_param_to_modify = st.generics.clone();
+
+    for g in generics_param_to_modify.params.iter_mut() {
+        if let syn::GenericParam::Type(ref mut t) = g {
+            t.bounds.push(syn::parse_quote!(std::fmt::Debug));
+        }
+    }
+
+    let (impl_generics, ty_generics, where_clause) = generics_param_to_modify.split_for_impl();
+
+    let ret_stream = quote!(
+
+        impl #impl_generics std::fmt::Debug for #struct_name_ident #ty_generics #where_clause {
+            fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+                #fmt_body_stream
+            }
+        }
+    );
+
+    Ok(ret_stream)
 }
