@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
 use proc_macro::TokenStream;
-use syn::{self, spanned::Spanned};
+use syn::{self, parse_quote, spanned::Spanned};
 use quote::{ToTokens, quote};
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
@@ -100,14 +102,27 @@ fn generate_debug_trait(st: &syn::DeriveInput) -> syn::Result<proc_macro2::Token
         }
     }
 
-
+    // 下面这一行是第七关新加的，调用函数找到关联类型信息
+    let associated_types_map = get_generic_associated_types(st);
     for g in generics_param_to_modify.params.iter_mut() {
         if let syn::GenericParam::Type(ref mut t) = g {
             let type_param_name = t.ident.to_string();
             if phantomdata_type_param_names.contains(&type_param_name) && !field_type_names.contains(&type_param_name) {
                 continue;
             }
+
+            // 下面这3行是本次新加的，如果是关联类型，就不要对泛型参数`T`本身再添加约束了,除非`T`本身也被直接使用了
+            if associated_types_map.contains_key(&type_param_name) && !field_type_names.contains(&type_param_name) { 
+                continue;
+            }
             t.bounds.push(syn::parse_quote!(std::fmt::Debug));
+        }
+    }
+
+    generics_param_to_modify.make_where_clause();
+    for (_, associated_types) in associated_types_map {
+        for associated_type in associated_types {
+            generics_param_to_modify.where_clause.as_mut().unwrap().predicates.push(parse_quote!(#associated_type: std::fmt::Debug));
         }
     }
 
@@ -154,4 +169,54 @@ fn get_field_type_name(field: &syn::Field) -> syn::Result<Option<String>> {
     }
 
     Ok(None)
+}
+
+struct TypePathVisitor {
+    generic_type_names: Vec<String>,
+    associated_types: HashMap<String, Vec<syn::TypePath>>,
+}
+
+fn visit_type_path(visitor: &mut TypePathVisitor, node: &syn::TypePath) {
+    if node.path.segments.len() >= 2 {
+        let generic_type_name = node.path.segments[0].ident.to_string();
+        if visitor.generic_type_names.contains(&generic_type_name) {
+            visitor.associated_types.entry(generic_type_name).or_insert(Vec::new()).push(node.clone());
+        }
+    }
+
+    // Recursively visit nested type paths
+    for segment in &node.path.segments {
+        if let syn::PathArguments::AngleBracketed(ref args) = segment.arguments {
+            for arg in &args.args {
+                if let syn::GenericArgument::Type(syn::Type::Path(type_path)) = arg {
+                    visit_type_path(visitor, type_path);
+                }
+            }
+        }
+    }
+}
+
+fn get_generic_associated_types(st: &syn::DeriveInput) -> HashMap<String, Vec<syn::TypePath>> {
+    let origin_generic_param_names: Vec<String> = st.generics.params.iter().filter_map(|f| {
+        if let syn::GenericParam::Type(ref t) = f {
+            return Some(t.ident.to_string());
+        }
+        None
+    }).collect();
+
+    let mut visitor = TypePathVisitor {
+        generic_type_names: origin_generic_param_names,
+        associated_types: HashMap::new(),
+    };
+
+    // Replace the visit_derive_input call with a custom implementation
+    if let syn::Data::Struct(syn::DataStruct { fields, .. }) = &st.data {
+        for field in fields {
+            if let syn::Type::Path(type_path) = &field.ty {
+                visit_type_path(&mut visitor, type_path);
+            }
+        }
+    }
+
+    visitor.associated_types
 }
