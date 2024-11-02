@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use proc_macro::TokenStream;
+use quote::{quote, ToTokens};
 use syn::{self, parse_quote, spanned::Spanned};
-use quote::{ToTokens, quote};
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
 pub fn derive(input: TokenStream) -> TokenStream {
@@ -15,15 +15,15 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
 fn do_expand(st: &syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let ret = generate_debug_trait(st)?;
-    return Ok(ret)
+    return Ok(ret);
 }
 
 type StructFields = syn::punctuated::Punctuated<syn::Field, syn::Token!(,)>;
 fn get_fields_from_derive_input(d: &syn::DeriveInput) -> syn::Result<&StructFields> {
     match &d.data {
         syn::Data::Struct(syn::DataStruct {
-            fields: syn::Fields::Named(syn::FieldsNamed { ref named,.. }),
-           ..
+            fields: syn::Fields::Named(syn::FieldsNamed { ref named, .. }),
+            ..
         }) => Ok(named),
         _ => Err(syn::Error::new_spanned(
             d,
@@ -66,10 +66,9 @@ fn generate_debug_trait_core(st: &syn::DeriveInput) -> syn::Result<proc_macro2::
 fn get_custom_format_of_field(field: &syn::Field) -> syn::Result<Option<String>> {
     for attr in &field.attrs {
         if let Ok(syn::Meta::NameValue(syn::MetaNameValue {
-            ref path,
-            ref lit,
-            ..
-        })) = attr.parse_meta() {
+            ref path, ref lit, ..
+        })) = attr.parse_meta()
+        {
             if path.is_ident("debug") {
                 if let syn::Lit::Str(ref s) = lit {
                     return Ok(Some(s.value()));
@@ -95,34 +94,53 @@ fn generate_debug_trait(st: &syn::DeriveInput) -> syn::Result<proc_macro2::Token
     for field in fields.iter() {
         if let Some(field_type_name) = get_field_type_name(field)? {
             field_type_names.push(field_type_name);
-            }
+        }
 
         if let Some(phantomdata_type_param_name) = get_phantom_data_generic_type_name(field)? {
             phantomdata_type_param_names.push(phantomdata_type_param_name);
         }
     }
+    // 判定是否设置了限定条件干预，如果设定了，则不进行推断，直接使用用户给出的限定条件放到where子句中
+    if let Some(hatch) = get_struct_escape_hatch(st) {
+        generics_param_to_modify.make_where_clause();
+        generics_param_to_modify
+            .where_clause
+            .as_mut()
+            .unwrap()
+            .predicates
+            .push(syn::parse_str(hatch.as_str()).unwrap());
+    } else {
+        // 下面这一行是第七关新加的，调用函数找到关联类型信息
+        let associated_types_map = get_generic_associated_types(st);
+        for g in generics_param_to_modify.params.iter_mut() {
+            if let syn::GenericParam::Type(ref mut t) = g {
+                let type_param_name = t.ident.to_string();
+                if phantomdata_type_param_names.contains(&type_param_name)
+                    && !field_type_names.contains(&type_param_name)
+                {
+                    continue;
+                }
 
-    // 下面这一行是第七关新加的，调用函数找到关联类型信息
-    let associated_types_map = get_generic_associated_types(st);
-    for g in generics_param_to_modify.params.iter_mut() {
-        if let syn::GenericParam::Type(ref mut t) = g {
-            let type_param_name = t.ident.to_string();
-            if phantomdata_type_param_names.contains(&type_param_name) && !field_type_names.contains(&type_param_name) {
-                continue;
+                // 下面这3行是本次新加的，如果是关联类型，就不要对泛型参数`T`本身再添加约束了,除非`T`本身也被直接使用了
+                if associated_types_map.contains_key(&type_param_name)
+                    && !field_type_names.contains(&type_param_name)
+                {
+                    continue;
+                }
+                t.bounds.push(syn::parse_quote!(std::fmt::Debug));
             }
-
-            // 下面这3行是本次新加的，如果是关联类型，就不要对泛型参数`T`本身再添加约束了,除非`T`本身也被直接使用了
-            if associated_types_map.contains_key(&type_param_name) && !field_type_names.contains(&type_param_name) { 
-                continue;
-            }
-            t.bounds.push(syn::parse_quote!(std::fmt::Debug));
         }
-    }
 
-    generics_param_to_modify.make_where_clause();
-    for (_, associated_types) in associated_types_map {
-        for associated_type in associated_types {
-            generics_param_to_modify.where_clause.as_mut().unwrap().predicates.push(parse_quote!(#associated_type: std::fmt::Debug));
+        generics_param_to_modify.make_where_clause();
+        for (_, associated_types) in associated_types_map {
+            for associated_type in associated_types {
+                generics_param_to_modify
+                    .where_clause
+                    .as_mut()
+                    .unwrap()
+                    .predicates
+                    .push(parse_quote!(#associated_type: std::fmt::Debug));
+            }
         }
     }
 
@@ -141,14 +159,18 @@ fn generate_debug_trait(st: &syn::DeriveInput) -> syn::Result<proc_macro2::Token
 }
 
 fn get_phantom_data_generic_type_name(field: &syn::Field) -> syn::Result<Option<String>> {
-    if let syn::Type::Path(syn::TypePath { path,.. }) = &field.ty {
+    if let syn::Type::Path(syn::TypePath { path, .. }) = &field.ty {
         if let Some(seg) = path.segments.last() {
             if seg.ident == "PhantomData" {
                 if let syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
                     ref args,
-                   ..
-                }) = &seg.arguments {
-                    if let syn::GenericArgument::Type(syn::Type::Path(syn::TypePath { path,.. })) = args.first().unwrap() {
+                    ..
+                }) = &seg.arguments
+                {
+                    if let syn::GenericArgument::Type(syn::Type::Path(syn::TypePath {
+                        path, ..
+                    })) = args.first().unwrap()
+                    {
                         if let Some(seg) = path.segments.last() {
                             return Ok(Some(seg.ident.to_string()));
                         }
@@ -162,7 +184,11 @@ fn get_phantom_data_generic_type_name(field: &syn::Field) -> syn::Result<Option<
 }
 
 fn get_field_type_name(field: &syn::Field) -> syn::Result<Option<String>> {
-    if let syn::Type::Path(syn::TypePath { path: syn::Path{ref segments, ..}, .. }) = &field.ty {
+    if let syn::Type::Path(syn::TypePath {
+        path: syn::Path { ref segments, .. },
+        ..
+    }) = &field.ty
+    {
         if let Some(seg) = segments.last() {
             return Ok(Some(seg.ident.to_string()));
         }
@@ -180,7 +206,11 @@ fn visit_type_path(visitor: &mut TypePathVisitor, node: &syn::TypePath) {
     if node.path.segments.len() >= 2 {
         let generic_type_name = node.path.segments[0].ident.to_string();
         if visitor.generic_type_names.contains(&generic_type_name) {
-            visitor.associated_types.entry(generic_type_name).or_insert(Vec::new()).push(node.clone());
+            visitor
+                .associated_types
+                .entry(generic_type_name)
+                .or_insert(Vec::new())
+                .push(node.clone());
         }
     }
 
@@ -197,12 +227,17 @@ fn visit_type_path(visitor: &mut TypePathVisitor, node: &syn::TypePath) {
 }
 
 fn get_generic_associated_types(st: &syn::DeriveInput) -> HashMap<String, Vec<syn::TypePath>> {
-    let origin_generic_param_names: Vec<String> = st.generics.params.iter().filter_map(|f| {
-        if let syn::GenericParam::Type(ref t) = f {
-            return Some(t.ident.to_string());
-        }
-        None
-    }).collect();
+    let origin_generic_param_names: Vec<String> = st
+        .generics
+        .params
+        .iter()
+        .filter_map(|f| {
+            if let syn::GenericParam::Type(ref t) = f {
+                return Some(t.ident.to_string());
+            }
+            None
+        })
+        .collect();
 
     let mut visitor = TypePathVisitor {
         generic_type_names: origin_generic_param_names,
@@ -219,4 +254,20 @@ fn get_generic_associated_types(st: &syn::DeriveInput) -> HashMap<String, Vec<sy
     }
 
     visitor.associated_types
+}
+
+fn get_struct_escape_hatch(st: &syn::DeriveInput) -> Option<String> {
+    if let Some(inert_attr) = st.attrs.last() {
+        if let Ok(syn::Meta::List(syn::MetaList { nested, .. })) = inert_attr.parse_meta() {
+            if let Some(syn::NestedMeta::Meta(syn::Meta::NameValue(path_value))) = nested.last() {
+                if path_value.path.is_ident("bound") {
+                    if let syn::Lit::Str(ref lit) = path_value.lit {
+                        return Some(lit.value());
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
